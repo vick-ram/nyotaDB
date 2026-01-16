@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>B-Tree Notes</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <aside class="editor">
+            <h2>New Note</h2>
+            <form id="noteForm">
+                <input type="hidden" id="noteId">
+                <input type="text" id="noteTitle" placeholder="Title..." required>
+                <textarea id="noteContent" placeholder="Write your note here..." required></textarea>
+                <button type="submit" id="saveBtn">Save Note</button>
+            </form>
+            <div id="db-status">Connecting to Storage Engine...</div>
+        </aside>
+
+        <main class="notes-display">
+            <header>
+                <h1>My Notes</h1>
+                <button onclick="fetchNotes()" class="refresh-btn">Sync with DB</button>
+            </header>
+            <div id="notesGrid" class="notes-grid">
+                <!-- Notes will appear here -->
+            </div>
+        </main>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>

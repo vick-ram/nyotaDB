@@ -1,0 +1,38 @@
+:root {
+    --primary: #f1c40f;
+    --dark: #2c3e50;
+    --light: #ecf0f1;
+    --danger: #e74c3c;
+}
+
+body { font-family: 'Segoe UI', sans-serif; background: #f0f2f5; margin: 0; display: flex; height: 100vh; }
+.app-container { display: flex; width: 100%; }
+
+.editor { width: 300px; background: white; padding: 20px; border-right: 1px solid #ddd; display: flex; flex-direction: column; }
+.editor h2 { color: var(--dark); }
+
+input, textarea {
+    width: 100%; border: 1px solid #ddd; border-radius: 4px; padding: 10px; margin-bottom: 10px; box-sizing: border-box;
+}
+textarea { height: 200px; resize: none; }
+
+button {
+    padding: 10px; cursor: pointer; border: none; border-radius: 4px; font-weight: bold;
+}
+#saveBtn { background: var(--primary); color: var(--dark); }
+
+.notes-display { flex-grow: 1; padding: 40px; overflow-y: auto; }
+.notes-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 20px; }
+
+.note-card {
+    background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    position: relative; border-top: 5px solid var(--primary);
+}
+.note-card h3 { margin: 0 0 10px 0; font-size: 1.2rem; }
+.note-card p { color: #666; font-size: 0.9rem; line-height: 1.4; }
+
+.actions { margin-top: 15px; display: flex; gap: 10px; }
+.delete-btn { background: none; color: var(--danger); font-size: 0.8rem; }
+.delete-btn:hover { text-decoration: underline; }
+
+#db-status { margin-top: auto; font-size: 0.7rem; color: #999; text-align: center; }
