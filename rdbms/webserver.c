@@ -319,12 +319,13 @@ void handle_request(int client_fd, StorageManager* sm) {
         write(client_fd, response_header, strlen(response_header));
         write(client_fd, HTML_PAGE, strlen(HTML_PAGE));
     }
-    else if (strncmp(path, "webapp/", 8) == 0) {
+    else if (strcmp(path, "webapp/index.html") == 0) {
         // Serve static files from webapp
         char file_path[256];
         snprintf(file_path, sizeof(file_path), "webapp%s", path + 7); // Remove "/webapp" prefix
 
         FILE* file = fopen(file_path, "rb");
+        printf("File found or not=====", file_path);
         if (!file) {
             const char* response = 
                 "HTTP/1.1 404 Not Found\r\n"
@@ -546,6 +547,4 @@ void run_webserver(StorageManager* sm) {
         close(server_fd_global);
         server_fd_global = -1;
     }
-    
-    // close(server_fd);
 }
