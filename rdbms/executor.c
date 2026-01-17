@@ -296,6 +296,143 @@ QueryResult* execute_insert(StorageManager* sm, SQLStatement* stmt) {
     return result;
 }
 
+// Add to executor.c
+QueryResult* execute_update(StorageManager* sm, SQLStatement* stmt) {
+    QueryResult* result = malloc(sizeof(QueryResult));
+    memset(result, 0, sizeof(QueryResult));
+    
+    // Load schema
+    TableSchema* schema = load_schema(sm, stmt->update_table);
+    if (!schema) {
+        result->error_message = strdup("Table not found");
+        return result;
+    }
+    
+    // Validate that all columns exist
+    for (uint32_t i = 0; i < stmt->update_column_count; i++) {
+        bool column_found = false;
+        for (uint32_t j = 0; j < schema->column_count; j++) {
+            if (strcmp(stmt->update_columns[i], schema->columns[j].name) == 0) {
+                column_found = true;
+                break;
+            }
+        }
+        if (!column_found) {
+            result->error_message = malloc(100);
+            snprintf(result->error_message, 100, "Column '%s' not found", stmt->update_columns[i]);
+            free(schema);
+            return result;
+        }
+    }
+    
+    // Simple table scan to find rows to update
+    uint32_t current_page = sm->header.root_page;
+    uint32_t rows_updated = 0;
+    
+    while (current_page != 0) {
+        Page* page = sm_get_page(sm, current_page);
+        if (!page) break;
+        
+        uint32_t row_offset = 0;
+        
+        while (row_offset + schema->row_size <= PAGE_SIZE) {
+            // Check if this is a valid row
+            bool all_zeros = true;
+            for (uint32_t i = 0; i < 8 && row_offset + i < PAGE_SIZE; i++) {
+                if (page->data[row_offset + i] != 0) {
+                    all_zeros = false;
+                    break;
+                }
+            }
+            
+            if (all_zeros) {
+                row_offset += schema->row_size;
+                continue;
+            }
+            
+            bool deleted = *(bool*)(page->data + row_offset);
+            uint32_t row_id = *(uint32_t*)(page->data + row_offset + sizeof(bool));
+            
+            if (!deleted) {
+                // Check WHERE condition if present
+                bool should_update = true;
+                
+                if (stmt->where_value && stmt->where_column[0] != '\0') {
+                    should_update = false;
+                    
+                    // Find the column to filter
+                    for (uint32_t i = 0; i < schema->column_count; i++) {
+                        if (strcmp(schema->columns[i].name, stmt->where_column) == 0) {
+                            uint32_t col_offset = get_column_offset(schema, i);
+                            uint32_t col_size = get_column_size(&schema->columns[i]);
+                            
+                            if (col_size == sizeof(int)) {
+                                int row_value;
+                                memcpy(&row_value, page->data + row_offset + col_offset, sizeof(int));
+                                int filter_value = *(int*)stmt->where_value;
+                                
+                                // Simple equality check for now
+                                if (row_value == filter_value) {
+                                    should_update = true;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+                
+                // Update the row if it matches WHERE condition
+                if (should_update) {
+                    // For each column to update
+                    for (uint32_t i = 0; i < stmt->update_column_count; i++) {
+                        // Find column index in schema
+                        for (uint32_t j = 0; j < schema->column_count; j++) {
+                            if (strcmp(stmt->update_columns[i], schema->columns[j].name) == 0) {
+                                uint32_t col_offset = get_column_offset(schema, j);
+                                uint32_t col_size = get_column_size(&schema->columns[j]);
+                                
+                                // Update the value
+                                if (stmt->update_values[i]) {
+                                    memcpy(page->data + row_offset + col_offset, 
+                                           stmt->update_values[i], col_size);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    
+                    page->is_dirty = true;
+                    rows_updated++;
+                }
+            }
+            
+            row_offset += schema->row_size;
+        }
+        
+        // Get next page
+        if (PAGE_SIZE >= sizeof(uint32_t)) {
+            current_page = *(uint32_t*)(page->data + PAGE_SIZE - sizeof(uint32_t));
+        } else {
+            current_page = 0;
+        }
+    }
+    
+    free(schema);
+    
+    // Return result
+    result->column_count = 1;
+    strcpy(result->column_names[0], "rows_updated");
+    result->row_count = 1;
+    result->rows = malloc(sizeof(void**));
+    result->rows[0] = malloc(sizeof(void*));
+    
+    char* msg = malloc(20);
+    snprintf(msg, 20, "%u", rows_updated);
+    result->rows[0][0] = msg;
+    
+    return result;
+}
+
 QueryResult* execute_delete(StorageManager* sm, SQLStatement* stmt) {
     QueryResult* result = malloc(sizeof(QueryResult));
     memset(result, 0, sizeof(QueryResult));
@@ -378,39 +515,62 @@ bool save_schema(StorageManager* sm, TableSchema* schema) {
     // Use the schema page from header
     uint32_t schema_page_id = sm->header.schema_page;
     if (schema_page_id == 0) {
-        // Allocate first schema page
-        schema_page_id = sm_allocate_page(sm);
+        // Allocate first schema page (page 1)
+        // schema_page_id = sm_allocate_page(sm);
+        schema_page_id = 1; // Schema always starts at page 1
+        sm->header.schema_page = schema_page_id;
+        // sm->header.is_dirty = true;
 
         printf("DEBUG: Allocated schema page %u\n", schema_page_id);
+
+        // Make sure page 1 exists
+        if (schema_page_id >= sm->header.page_count) {
+            sm_allocate_page(sm); // This will create page 1
+        }
     }
     
     Page* schema_page = sm_get_page(sm, schema_page_id);
     if (!schema_page) {
+        printf("DEBUG: Failed to get schema page %u\n", schema_page_id);
         return false;
     }
 
     // Calculate offset in page
     uint32_t offset = 0;
     char stored_name[MAX_TABLE_NAME];
+    bool found_slot = false;
+
+    printf("DEBUG: Searching for slot in schema page...\n");
     
     while (offset + sizeof(TableSchema) <= PAGE_SIZE) {
         // Read table name
         memcpy(stored_name, schema_page->data + offset, MAX_TABLE_NAME);
+
+        printf("DEBUG: Slot at offset %u: '%s'\n", offset, stored_name);
         
         if (stored_name[0] == '\0' || strcmp(stored_name, schema->name) == 0) {
             // Empty slot found or schema exists
+            found_slot = true;
+            printf("DEBUG: Found slot at offset %u\n", offset);
             break;
         }
         
         offset += sizeof(TableSchema);
     }
+
+    if (!found_slot) {
+        printf("DEBUG: No free slot found in schema page\n");
+        return false;
+    }
     
     if (offset + sizeof(TableSchema) > PAGE_SIZE) {
         // Page full - need to handle in real implementation
+        printf("DEBUG: Page full at offset %u\n", offset);
         return false;
     }
     
     // Save the schema at the calculated offset
+    printf("DEBUG: Saving schema at offset %u (size: %lu)\n", offset, sizeof(TableSchema));
     memcpy(schema_page->data + offset, schema, sizeof(TableSchema));
     schema_page->is_dirty = true;
     
@@ -519,6 +679,86 @@ void** deserialize_row(TableSchema* schema, void* row_data) {
     }
     
     return values;
+}
+
+uint32_t count_tables(StorageManager* sm) {
+    if (sm->header.schema_page == 0) return 0;
+
+    Page* schema_page = sm_get_page(sm, sm->header.schema_page);
+    if (!schema_page) return 0;
+
+    uint32_t table_count = 0;
+    uint32_t offset = 0;
+    char table_name[MAX_TABLE_NAME];
+
+    while (offset + sizeof(TableSchema) <= PAGE_SIZE) {
+        memcpy(table_name, schema_page->data + offset, MAX_TABLE_NAME);
+
+        if (table_name[0] == '\0') {
+            break; // Empty slot
+        }
+
+        table_count++;
+        offset += sizeof(TableSchema);
+    }
+
+    return table_count;
+
+}
+
+uint32_t get_all_tables(StorageManager* sm, char table_names[][MAX_TABLE_NAME], uint32_t max_tables) {
+    if (sm->header.schema_page == 0) return 0;
+
+    Page* schema_page = sm_get_page(sm, sm->header.schema_page);
+    if (!schema_page) return 0;
+    
+    uint32_t count = 0;
+    uint32_t offset = 0;
+    
+    while (offset + sizeof(TableSchema) <= PAGE_SIZE && count < max_tables) {
+        char table_name[MAX_TABLE_NAME];
+        memcpy(table_name, schema_page->data + offset, MAX_TABLE_NAME);
+        
+        if (table_name[0] == '\0') {
+            break; // Empty slot
+        }
+        
+        strcpy(table_names[count], table_name);
+        count++;
+        offset += sizeof(TableSchema);
+    }
+    
+    return count;
+}
+
+QueryResult* execute_show_tables(StorageManager* sm) {
+    QueryResult* result = malloc(sizeof(QueryResult));
+    memset(result, 0, sizeof(QueryResult));
+    
+    result->column_count = 1;
+    strcpy(result->column_names[0], "Tables");
+    
+    // Get all table names
+    char table_names[100][MAX_TABLE_NAME];
+    uint32_t table_count = get_all_tables(sm, table_names, 100);
+    
+    if (table_count == 0) {
+        result->row_count = 1;
+        result->rows = malloc(sizeof(void**));
+        result->rows[0] = malloc(sizeof(void*));
+        result->rows[0][0] = strdup("No tables found");
+        return result;
+    }
+    
+    result->row_count = table_count;
+    result->rows = malloc(table_count * sizeof(void**));
+    
+    for (uint32_t i = 0; i < table_count; i++) {
+        result->rows[i] = malloc(sizeof(void*));
+        result->rows[i][0] = strdup(table_names[i]);
+    }
+    
+    return result;
 }
 
 

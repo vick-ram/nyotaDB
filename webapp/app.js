@@ -1,4 +1,4 @@
-const API_URL = "http://localhost:8080/query";
+const API_URL = "http://localhost:8081/query";
 const TABLE_NAME = "notes";
 
 // On Page Load: Initialize Table and Fetch Data

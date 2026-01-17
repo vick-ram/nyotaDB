@@ -7,6 +7,7 @@
 static bool parse_create_table(Tokenizer* t, SQLStatement* stmt);
 static bool parse_select(Tokenizer* t, SQLStatement* stmt);
 static bool parse_insert(Tokenizer* t, SQLStatement* stmt);
+static bool parse_update(Tokenizer* t, SQLStatement* stmt);
 static bool parse_delete(Tokenizer* t, SQLStatement* stmt);
 static bool parse_where_clause(Tokenizer* t, SQLStatement* stmt);
 static bool parse_value_list(Tokenizer* t, SQLStatement* stmt, bool for_insert);
@@ -41,11 +42,7 @@ SQLStatement *parse_sql(const char *sql)
         parse_success = parse_delete(t, stmt);
     } 
     else if (strcasecmp(token, "UPDATE") == 0) {
-        // TODO: Implement UPDATE parsing
-        stmt->type = STMT_UPDATE;
-        snprintf(stmt->error_message, sizeof(stmt->error_message), "UPDATE not yet implemented");
-        stmt->has_error = true;
-        parse_success = false;
+        parse_success = parse_update(t, stmt);
     } 
     else if (strcasecmp(token, "DROP") == 0) {
         stmt->type = STMT_DROP_TABLE;
@@ -323,6 +320,107 @@ static bool parse_insert(Tokenizer* t, SQLStatement* stmt) {
     
     // Parse value list
     return parse_value_list(t, stmt, true);
+}
+
+static bool parse_update(Tokenizer* t, SQLStatement* stmt) {
+    stmt->type = STMT_UPDATE;
+
+    // Parse table name
+    char* table_name = tokenizer_next(t);
+    if (!table_name) {
+        snprintf(stmt->error_message, sizeof(stmt->error_message), "Expected table name");
+        return false;
+    }
+    strncpy(stmt->update_table, table_name, MAX_TABLE_NAME - 1);
+    free(table_name);
+    
+    // Expect "SET"
+    if (!expect_token(t, "SET", "Expected SET after table name")) {
+        return false;
+    }
+    
+    // Parse SET clause
+    uint32_t col_idx = 0;
+    bool parsing_set = true;
+    
+    while (parsing_set && col_idx < MAX_COLUMNS) {
+        // Parse column name
+        char* col_name = tokenizer_next(t);
+        if (!col_name) {
+            snprintf(stmt->error_message, sizeof(stmt->error_message), "Expected column name in SET");
+            return false;
+        }
+        strncpy(stmt->update_columns[col_idx], col_name, MAX_COLUMN_NAME - 1);
+        free(col_name);
+        
+        // Expect "="
+        if (!expect_token(t, "=", "Expected = after column name")) {
+            return false;
+        }
+        
+        // Parse value
+        char* value_str = tokenizer_next(t);
+        if (!value_str) {
+            snprintf(stmt->error_message, sizeof(stmt->error_message), "Expected value after =");
+            return false;
+        }
+        
+        // Allocate space for update values if needed
+        if (col_idx == 0) {
+            stmt->update_values = malloc(MAX_COLUMNS * sizeof(void*));
+            if (!stmt->update_values) {
+                free(value_str);
+                return false;
+            }
+        }
+        
+        // Parse value based on type (simplified - we'll need schema to know actual type)
+        // For now, handle integers and strings
+        if (value_str[0] == '\'' || value_str[0] == '"') {
+            // String value
+            char* str_val = malloc(strlen(value_str) - 1);
+            if (str_val) {
+                strncpy(str_val, value_str + 1, strlen(value_str) - 2);
+                str_val[strlen(value_str) - 2] = '\0';
+                stmt->update_values[col_idx] = str_val;
+            }
+        } else {
+            // Try integer
+            int* int_val = malloc(sizeof(int));
+            if (int_val) {
+                *int_val = atoi(value_str);
+                stmt->update_values[col_idx] = int_val;
+            }
+        }
+        free(value_str);
+        
+        col_idx++;
+        
+        // Check for comma or WHERE
+        char* next = tokenizer_peek(t);
+        if (next && strcmp(next, ",") == 0) {
+            free(tokenizer_next(t)); // Consume comma
+        } 
+        else if (next && strcasecmp(next, "WHERE") == 0) {
+            free(tokenizer_next(t)); // Consume WHERE
+            parsing_set = false;
+        }
+        else if (!next) {
+            snprintf(stmt->error_message, sizeof(stmt->error_message), "Unexpected end of SET clause");
+            return false;
+        }
+    }
+    
+    stmt->update_column_count = col_idx;
+    
+    // Parse WHERE clause if present
+    char* where_token = tokenizer_peek(t);
+    if (where_token && strcasecmp(where_token, "WHERE") == 0) {
+        free(tokenizer_next(t)); // Consume WHERE
+        return parse_where_clause(t, stmt);
+    }
+    
+    return true;
 }
 
 static bool parse_delete(Tokenizer* t, SQLStatement* stmt) {

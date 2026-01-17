@@ -62,6 +62,7 @@ typedef struct {
     DataType where_value_type;
     
     // For UPDATE
+    char update_table[MAX_TABLE_NAME];
     char update_columns[MAX_COLUMNS][MAX_COLUMN_NAME];
     void** update_values;
     uint32_t update_column_count;

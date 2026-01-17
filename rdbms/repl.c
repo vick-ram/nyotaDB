@@ -150,28 +150,86 @@ void print_help() {
     printf("\n");
 }
 
+// void handle_dot_command(StorageManager* sm, const char* command) {
+//     if (strcmp(command, ".tables") == 0 || strcasecmp(command, "SHOW TABLES;") == 0) {
+//         // TODO: Implement table listing
+//         printf("+----------------------+\n");
+//         printf("| Tables in database   |\n");
+//         printf("+----------------------+\n");
+//         printf("| (Not implemented)    |\n");
+//         printf("+----------------------+\n");
+//     }
+//     else if (strncmp(command, ".schema ", 8) == 0) {
+//         const char* table_name = command + 8;
+//         // TODO: Load and display schema
+//         printf("Schema for table '%s':\n", table_name);
+//         printf("(Not implemented)\n");
+//     }
+//     else if (strcmp(command, ".clear") == 0 || strcasecmp(command, "CLEAR;") == 0) {
+//         printf("\033[2J\033[H"); // Clear screen
+//         print_welcome();
+//     }
+//     else {
+//         printf("Unknown dot command: %s\n", command);
+//         printf("Available dot commands: .tables, .schema <table>, .clear\n");
+//     }
+// }
+
+// Update handle_dot_command in repl.c
 void handle_dot_command(StorageManager* sm, const char* command) {
     if (strcmp(command, ".tables") == 0 || strcasecmp(command, "SHOW TABLES;") == 0) {
-        // TODO: Implement table listing
-        printf("+----------------------+\n");
-        printf("| Tables in database   |\n");
-        printf("+----------------------+\n");
-        printf("| (Not implemented)    |\n");
-        printf("+----------------------+\n");
+        // Use the real implementation
+        QueryResult* result = execute_show_tables(sm);
+        if (result) {
+            print_result(result);
+            free_result(result);
+        }
     }
     else if (strncmp(command, ".schema ", 8) == 0) {
         const char* table_name = command + 8;
-        // TODO: Load and display schema
-        printf("Schema for table '%s':\n", table_name);
-        printf("(Not implemented)\n");
+        // Load and display schema
+        TableSchema* schema = load_schema(sm, table_name);
+        if (schema) {
+            printf("Schema for table '%s':\n", table_name);
+            printf("Columns: %u\n", schema->column_count);
+            printf("Row size: %u bytes\n", schema->row_size);
+            
+            for (uint32_t i = 0; i < schema->column_count; i++) {
+                printf("  %s: ", schema->columns[i].name);
+                switch (schema->columns[i].type) {
+                    case DT_INT: printf("INT"); break;
+                    case DT_FLOAT: printf("FLOAT"); break;
+                    case DT_STRING: printf("STRING(%u)", schema->columns[i].length); break;
+                    case DT_BOOL: printf("BOOL"); break;
+                }
+                if (schema->columns[i].is_primary) printf(" PRIMARY KEY");
+                if (schema->columns[i].is_unique) printf(" UNIQUE");
+                printf("\n");
+            }
+            free(schema);
+        } else {
+            printf("Table '%s' not found\n", table_name);
+        }
     }
     else if (strcmp(command, ".clear") == 0 || strcasecmp(command, "CLEAR;") == 0) {
         printf("\033[2J\033[H"); // Clear screen
         print_welcome();
     }
+    else if (strcmp(command, ".stats") == 0) {
+        // Show database statistics
+        printf("Database Statistics:\n");
+        printf("  Total pages: %u\n", sm->header.page_count);
+        printf("  Schema page: %u\n", sm->header.schema_page);
+        printf("  Root page: %u\n", sm->header.root_page);
+        printf("  Cache size: %u pages\n", sm->cache_size);
+    }
     else {
         printf("Unknown dot command: %s\n", command);
-        printf("Available dot commands: .tables, .schema <table>, .clear\n");
+        printf("Available dot commands:\n");
+        printf("  .tables          - List all tables\n");
+        printf("  .schema <table>  - Show table schema\n");
+        printf("  .stats           - Show database statistics\n");
+        printf("  .clear           - Clear screen\n");
     }
 }
 
@@ -259,6 +317,9 @@ void run_repl() {
             case STMT_INSERT:
                 result = execute_insert(sm, stmt);
                 break;
+            case STMT_UPDATE:
+                result = execute_update(sm, stmt);
+                break;
             case STMT_DELETE:
                 result = execute_delete(sm, stmt);
                 break;
@@ -285,20 +346,3 @@ void run_repl() {
     sm_close(sm);
     printf("Goodbye! Database saved to 'nyotadb.db'\n");
 }
-
-// int main(int argc, char* argv[]) {
-//     if (argc > 1 && strcmp(argv[1], "--web") == 0) {
-//         // Run in web server mode
-//         StorageManager* sm = sm_open("nyotadb.db");
-//         if (!sm) {
-//             printf("ERROR: Failed to open database for web server\n");
-//             return 1;
-//         }
-//         run_webserver(sm);
-//         sm_close(sm);
-//     } else {
-//         // Run in REPL mode
-//         run_repl();
-//     }
-//     return 0;
-// }

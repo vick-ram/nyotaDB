@@ -5,14 +5,17 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <errno.h>
+#include <signal.h>
 #include "storage.h"
 #include "parser.h"
 #include "executor.h"
 #include <ctype.h>
 
-#define PORT 8081
+#define PORT 8082
 #define BUFFER_SIZE 8192
 #define MAX_CLIENTS 10
+
+static int server_fd_global = -1; // Global to access in signal handler
 
 // HTML/CSS/JS for the web interface
 const char* HTML_PAGE = 
@@ -316,6 +319,53 @@ void handle_request(int client_fd, StorageManager* sm) {
         write(client_fd, response_header, strlen(response_header));
         write(client_fd, HTML_PAGE, strlen(HTML_PAGE));
     }
+    else if (strncmp(path, "webapp/", 8) == 0) {
+        // Serve static files from webapp
+        char file_path[256];
+        snprintf(file_path, sizeof(file_path), "webapp%s", path + 7); // Remove "/webapp" prefix
+
+        FILE* file = fopen(file_path, "rb");
+        if (!file) {
+            const char* response = 
+                "HTTP/1.1 404 Not Found\r\n"
+                "Content-Type: text/html\r\n\r\n"
+                "<h1>404 Not Found</h1>";
+            write(client_fd, response, strlen(response));
+            close(client_fd);
+            return;
+        }
+
+        // Get file size
+        fseek(file, 0, SEEK_END);
+        long file_size = ftell(file);
+        fseek(file, 0, SEEK_SET);
+        
+        // Determine content type
+        const char* content_type = "text/plain";
+        if (strstr(file_path, ".html")) content_type = "text/html";
+        else if (strstr(file_path, ".css")) content_type = "text/css";
+        else if (strstr(file_path, ".js")) content_type = "application/javascript";
+        else if (strstr(file_path, ".json")) content_type = "application/json";
+        
+        // Send header
+        char response_header[256];
+        snprintf(response_header, sizeof(response_header),
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: %s\r\n"
+                "Content-Length: %ld\r\n\r\n",
+                content_type, file_size);
+        
+        write(client_fd, response_header, strlen(response_header));
+        
+        // Send file content
+        char file_buffer[BUFFER_SIZE];
+        size_t bytes_read;
+        while ((bytes_read = fread(file_buffer, 1, BUFFER_SIZE, file)) > 0) {
+            write(client_fd, file_buffer, bytes_read);
+        }
+        
+        fclose(file);
+    }
     else if (strcmp(path, "/api/query") == 0 && strcmp(method, "POST") == 0) {
         // Handle SQL query API
         char* query = NULL;
@@ -422,22 +472,32 @@ void handle_request(int client_fd, StorageManager* sm) {
     close(client_fd);
 }
 
+void signal_handler(int sig) {
+    if (sig == SIGINT) {
+        printf("\nShutting down nyotaDB web server...\n");
+        if (server_fd_global >= 0) {
+            close(server_fd_global);
+            server_fd_global = -1;
+        }
+        exit(0);
+    }
+}
+
 void run_webserver(StorageManager* sm) {
-    int server_fd;
     struct sockaddr_in address;
     int addrlen = sizeof(address);
     
     // Create socket
-    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+    if ((server_fd_global = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
         perror("Failed to create socket");
         exit(EXIT_FAILURE);
     }
     
     // Set socket options
     int opt = 1;
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+    if (setsockopt(server_fd_global, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
         perror("Failed to set socket options");
-        close(server_fd);
+        close(server_fd_global);
         exit(EXIT_FAILURE);
     }
     
@@ -446,16 +506,16 @@ void run_webserver(StorageManager* sm) {
     address.sin_port = htons(PORT);
     
     // Bind
-    if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) {
+    if (bind(server_fd_global, (struct sockaddr*)&address, sizeof(address)) < 0) {
         perror("Failed to bind socket");
-        close(server_fd);
+        close(server_fd_global);
         exit(EXIT_FAILURE);
     }
     
     // Listen
-    if (listen(server_fd, MAX_CLIENTS) < 0) {
+    if (listen(server_fd_global, MAX_CLIENTS) < 0) {
         perror("Failed to listen on socket");
-        close(server_fd);
+        close(server_fd_global);
         exit(EXIT_FAILURE);
     }
     
@@ -468,14 +528,24 @@ void run_webserver(StorageManager* sm) {
     printf("╚══════════════════════════════════════════════╝\n\n");
     
     while (1) {
-        int client_fd = accept(server_fd, (struct sockaddr*)&address, (socklen_t*)&addrlen);
+        int client_fd = accept(server_fd_global, (struct sockaddr*)&address, (socklen_t*)&addrlen);
         if (client_fd < 0) {
+            if (errno == EINTR) {
+                // Interrupted by signal, exit loop
+                break;
+            }
             perror("Failed to accept connection");
             continue;
         }
         
         handle_request(client_fd, sm);
     }
+
+    // Close socket if loop exists
+    if (server_fd_global != -1) {
+        close(server_fd_global);
+        server_fd_global = -1;
+    }
     
-    close(server_fd);
+    // close(server_fd);
 }
