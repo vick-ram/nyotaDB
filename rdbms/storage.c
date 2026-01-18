@@ -5,6 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include "main.h"
 
 static void lru_remove(StorageManager* sm, Page* page);
 static void lru_insert_front(StorageManager* sm, Page* page);
@@ -12,7 +13,7 @@ static void lru_touch(StorageManager* sm, Page* page);
 static void evict_lru_page(StorageManager* sm);
 
 StorageManager* sm_open(const char* filename) {
-    StorageManager* sm = (StorageManager*)malloc(sizeof(StorageManager));
+    StorageManager* sm = SAFE_MALLOC(StorageManager, 1);
     if (!sm) return NULL;
     
     sm->cache_size = 0;
@@ -42,7 +43,7 @@ StorageManager* sm_open(const char* filename) {
         write(sm->fd, &sm->header, sizeof(DBHeader));
 
         // Initialize first page (schema page)
-        Page* first_page = (Page*)malloc(sizeof(Page));
+        Page* first_page = SAFE_MALLOC(Page, 1);
         first_page->page_id = 0;
         sm->pages[0] = first_page;
     } else {
@@ -52,7 +53,7 @@ StorageManager* sm_open(const char* filename) {
     
         if (sm->header.magic_number != 0x0042444D) {
             close(sm->fd);
-            free(sm);
+            SAFE_FREE(sm);
             return NULL;
         }
     }
@@ -80,14 +81,14 @@ Page* sm_get_page(StorageManager* sm, uint32_t page_id) {
     off_t offset = page_id * PAGE_SIZE + sizeof(DBHeader);
     lseek(sm->fd, offset, SEEK_SET);
 
-    Page* page = (Page*)malloc(sizeof(Page));
+    Page* page = SAFE_MALLOC(Page, 1);
     page->page_id = page_id;
     page->is_dirty = false;
     page->prev = page->next = NULL;
 
     ssize_t bytes_read = read(sm->fd, page->data, PAGE_SIZE);
     if (bytes_read != PAGE_SIZE) {
-        free(page);
+        SAFE_FREE(page);
         return NULL;
     }
 
@@ -112,7 +113,7 @@ void sm_close(StorageManager* sm) {
         if (sm->pages[i] && sm->pages[i]->is_dirty) {
             sm_persist_page(sm, sm->pages[i]);
         }
-        free(sm->pages[i]);
+        SAFE_FREE(sm->pages[i]);
     }
 
     // Update header
@@ -120,7 +121,7 @@ void sm_close(StorageManager* sm) {
     write(sm->fd, &sm->header, sizeof(DBHeader));
 
     close(sm->fd);
-    free(sm);
+    SAFE_FREE(sm);
 }
 
 uint32_t sm_allocate_page(StorageManager* sm) {
@@ -133,7 +134,7 @@ uint32_t sm_allocate_page(StorageManager* sm) {
     sm->header.page_count++;
 
     // Initialize new page
-    Page* page = malloc(sizeof(Page));
+    Page* page = SAFE_MALLOC(Page, 1);
     memset(page->data, 0, PAGE_SIZE);
     page->page_id = new_page_id;
     page->is_dirty = true;
@@ -193,6 +194,6 @@ static void evict_lru_page(StorageManager* sm) {
     }
 
     lru_remove(sm, victim);
-    free(victim);
+    SAFE_FREE(victim);
 
 }

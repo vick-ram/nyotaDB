@@ -10,6 +10,7 @@
 #include "parser.h"
 #include "executor.h"
 #include <ctype.h>
+#include "main.h"
 
 #define PORT 8082
 #define BUFFER_SIZE 8192
@@ -194,18 +195,18 @@ const char* HTML_PAGE =
 // Convert QueryResult to JSON
 char* result_to_json(QueryResult* result) {
     if (!result) {
-        return strdup("{\"error\":\"Null result\"}");
+        return SAFE_STRDUP("{\"error\":\"Null result\"}");
     }
     
     if (result->error_message) {
         char buffer[512];
         snprintf(buffer, sizeof(buffer), "{\"error\":\"%s\"}", result->error_message);
-        return strdup(buffer);
+        return SAFE_STRDUP(buffer);
     }
     
     // Calculate needed buffer size
     size_t buffer_size = 1024; // Start with reasonable size
-    char* json = malloc(buffer_size);
+    char* json = SAFE_MALLOC(char, buffer_size);
     if (!json) return NULL;
     
     int pos = 0;
@@ -222,7 +223,7 @@ char* result_to_json(QueryResult* result) {
         // Reallocate if needed
         if (pos >= buffer_size - 100) {
             buffer_size *= 2;
-            json = realloc(json, buffer_size);
+            json = SAFE_REALLOC(json, char, buffer_size);
             if (!json) return NULL;
         }
     }
@@ -236,7 +237,7 @@ char* result_to_json(QueryResult* result) {
             if (result->rows[row][col]) {
                 // Escape quotes in string values
                 char* value = (char*)result->rows[row][col];
-                char* escaped = malloc(strlen(value) * 2 + 3);
+                char* escaped = SAFE_MALLOC(char, strlen(value) * 2 + 3);
                 if (escaped) {
                     char* dest = escaped;
                     *dest++ = '"';
@@ -250,7 +251,7 @@ char* result_to_json(QueryResult* result) {
                     *dest = '\0';
                     
                     pos += snprintf(json + pos, buffer_size - pos, "%s", escaped);
-                    free(escaped);
+                    SAFE_FREE(escaped);
                 } else {
                     pos += snprintf(json + pos, buffer_size - pos, "\"\"");
                 }
@@ -264,7 +265,7 @@ char* result_to_json(QueryResult* result) {
             // Reallocate if needed
             if (pos >= buffer_size - 100) {
                 buffer_size *= 2;
-                json = realloc(json, buffer_size);
+                json = SAFE_REALLOC(json, char, buffer_size);
                 if (!json) return NULL;
             }
         }
@@ -407,7 +408,7 @@ void handle_request(int client_fd, StorageManager* sm) {
         char* json_response = NULL;
         
         if (!stmt || stmt->has_error) {
-            json_response = malloc(256);
+            json_response = SAFE_MALLOC(char, 256);
             if (json_response) {
                 snprintf(json_response, 256, 
                         "{\"error\":\"Parse error: %s\"}", 
@@ -430,21 +431,22 @@ void handle_request(int client_fd, StorageManager* sm) {
                     result = execute_delete(sm, stmt);
                     break;
                 default:
-                    json_response = strdup("{\"error\":\"Unsupported statement type\"}");
+                    json_response = SAFE_STRDUP("{\"error\":\"Unsupported statement type\"}");
+                    break;
             }
             
             if (result) {
                 json_response = result_to_json(result);
                 free_result(result);
             } else if (!json_response) {
-                json_response = strdup("{\"message\":\"Query executed successfully\"}");
+                json_response = SAFE_STRDUP("{\"message\":\"Query executed successfully\"}");
             }
             
             free_sql_statement(stmt);
         }
         
         if (!json_response) {
-            json_response = strdup("{\"error\":\"Internal server error\"}");
+            json_response = SAFE_STRDUP("{\"error\":\"Internal server error\"}");
         }
         
         // Send response
@@ -459,7 +461,7 @@ void handle_request(int client_fd, StorageManager* sm) {
         write(client_fd, response_header, strlen(response_header));
         write(client_fd, json_response, strlen(json_response));
         
-        free(json_response);
+        SAFE_FREE(json_response);
     }
     else {
         // 404 Not Found

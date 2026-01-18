@@ -5,30 +5,72 @@
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include "main.h"
+
+#define HISTORY_FILE ".nyotadb_history"
 
 #ifdef HAVE_READLINE
 #include <readline/readline.h>
 #include <readline/history.h>
+
+static char* sql_keywords[] = {
+    "SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", 
+    "UPDATE", "SET", "DELETE", "CREATE", "TABLE", "DROP", 
+    "INTEGER", "TEXT", "PRIMARY", "KEY", "NULL", "JOIN", NULL
+};
+
+// Autocomplete generator
+char* sql_generator(const char* text, int state) {
+    static int list_index, len;
+    char* name;
+    if (!state) {
+        list_index = 0;
+        len = strlen(text);
+    }
+    while ((name = sql_keywords[list_index++])) {
+        if (strncasecmp(name, text, len) == 0) return SAFE_STRDUP(name);
+    }
+    return NULL;
+}
+
+char** sql_completer(const char* text, int start, int end) {
+    rl_attempted_completion_over = 1;
+    return rl_completion_matches(text, sql_generator);
+}
+
+void initialize_readline() {
+    using_history();
+    read_history(HISTORY_FILE);
+    rl_attempted_completion_function = sql_completer;
+}
+
+void finish_readline() {
+    write_history(HISTORY_FILE);
+}
 #else
-// Simple fallback input if readline is not available
+// Fallback if no readline
+void initialize_readline() {}
+void finish_readline() {}
 char* simple_readline(const char* prompt) {
-    static char buffer[1024];
+    char buffer[2048];
     printf("%s", prompt);
     fflush(stdout);
-    
-    if (fgets(buffer, sizeof(buffer), stdin) == NULL) {
-        return NULL;
-    }
-    
-    // Remove newline
+    if (fgets(buffer, sizeof(buffer), stdin) == NULL) return NULL;
     size_t len = strlen(buffer);
-    if (len > 0 && buffer[len-1] == '\n') {
-        buffer[len-1] = '\0';
-    }
-    
-    return strdup(buffer);
+    if (len > 0 && buffer[len-1] == '\n') buffer[len-1] = '\0';
+    return SAFE_STRDUP(buffer);
 }
 #endif
+
+int is_command_complete(const char* line) {
+    if (!line || strlen(line) == 0) return 0;
+    // Dot commands are immediately complete
+    if (line[0] == '.') return 1;
+    // SQL commands are complete if they end with a semicolon
+    size_t len = strlen(line);
+    while (len > 0 && isspace(line[len-1])) len--;
+    return (len > 0 && line[len-1] == ';');
+}
 
 void print_result(QueryResult* result) {
     if (!result) {
@@ -150,31 +192,6 @@ void print_help() {
     printf("\n");
 }
 
-// void handle_dot_command(StorageManager* sm, const char* command) {
-//     if (strcmp(command, ".tables") == 0 || strcasecmp(command, "SHOW TABLES;") == 0) {
-//         // TODO: Implement table listing
-//         printf("+----------------------+\n");
-//         printf("| Tables in database   |\n");
-//         printf("+----------------------+\n");
-//         printf("| (Not implemented)    |\n");
-//         printf("+----------------------+\n");
-//     }
-//     else if (strncmp(command, ".schema ", 8) == 0) {
-//         const char* table_name = command + 8;
-//         // TODO: Load and display schema
-//         printf("Schema for table '%s':\n", table_name);
-//         printf("(Not implemented)\n");
-//     }
-//     else if (strcmp(command, ".clear") == 0 || strcasecmp(command, "CLEAR;") == 0) {
-//         printf("\033[2J\033[H"); // Clear screen
-//         print_welcome();
-//     }
-//     else {
-//         printf("Unknown dot command: %s\n", command);
-//         printf("Available dot commands: .tables, .schema <table>, .clear\n");
-//     }
-// }
-
 // Update handle_dot_command in repl.c
 void handle_dot_command(StorageManager* sm, const char* command) {
     if (strcmp(command, ".tables") == 0 || strcasecmp(command, "SHOW TABLES;") == 0) {
@@ -206,7 +223,7 @@ void handle_dot_command(StorageManager* sm, const char* command) {
                 if (schema->columns[i].is_unique) printf(" UNIQUE");
                 printf("\n");
             }
-            free(schema);
+            SAFE_FREE(schema);
         } else {
             printf("Table '%s' not found\n", table_name);
         }
@@ -240,74 +257,78 @@ void run_repl() {
         return;
     }
     
+    initialize_readline();
     print_welcome();
     
     char* line = NULL;
+    char* full_statement = NULL;
     while (1) {
+        const char* prompt = (full_statement == NULL) ? "nyotadb> " : "     ..> ";
+
 #ifdef HAVE_READLINE
-        line = readline("nyotadb> ");
+        line = readline(prompt);
 #else
-        line = simple_readline("nyotadb> ");
+        line = simple_readline(prompt);
 #endif
         
         if (!line) {
             printf("\n");
             break; // EOF (Ctrl+D)
         }
-        
-        // Skip empty lines
-        if (strlen(line) == 0) {
-            free(line);
+
+        if (strlen(line) == 0 && full_statement == NULL) {
+            SAFE_FREE(line);
             continue;
         }
-        
-#ifdef HAVE_READLINE
-        if (strlen(line) > 0) {
-            add_history(line);
+
+        if (full_statement == NULL) {
+            full_statement = SAFE_STRDUP(line);
+        } else {
+            size_t new_size = strlen(full_statement) + strlen(line) + 2;
+            full_statement = SAFE_REALLOC(full_statement, char, new_size);
+            strcat(full_statement, " ");
+            strcat(full_statement, line);
         }
+        SAFE_FREE(line);
+
+        if (!is_command_complete(full_statement)) continue;
+
+#ifdef HAVE_READLINE
+        add_history(full_statement);
+        append_history(1, HISTORY_FILE);
 #endif
-        
-        // Handle dot commands and special commands
-        if (line[0] == '.' || 
-            strcasecmp(line, "HELP;") == 0 ||
-            strcasecmp(line, "QUIT;") == 0 ||
-            strcasecmp(line, "EXIT;") == 0 ||
-            strcasecmp(line, "CLEAR;") == 0 ||
-            strcasecmp(line, "SHOW TABLES;") == 0) {
+
+        // Handle quit early
+        if (full_statement[0] == '.' || 
+            strcasecmp(full_statement, "HELP;") == 0 ||
+            strcasecmp(full_statement, "QUIT;") == 0 ||
+            strcasecmp(full_statement, "EXIT;") == 0 ||
+            strcasecmp(full_statement, "CLEAR;") == 0 ||
+            strcasecmp(full_statement, "SHOW TABLES;") == 0) {
             
-            if (strcasecmp(line, "HELP;") == 0) {
+            if (strcasecmp(full_statement, "HELP;") == 0) {
                 print_help();
             }
-            else if (strcasecmp(line, "QUIT;") == 0 || strcasecmp(line, "EXIT;") == 0) {
-                free(line);
-                break;
+            else if (strcasecmp(full_statement, "QUIT;") == 0 || strcasecmp(full_statement, "EXIT;") == 0) {
+                break; // Break will reach the cleanup at the bottom
+            }
+            else if (strcasecmp(full_statement, "CLEAR;") == 0) {
+                printf("\033[H\033[J"); // ANSI escape code to clear screen
+            }
+            else if (strcasecmp(full_statement, "SHOW TABLES;") == 0) {
+                handle_dot_command(sm, ".tables");
             }
             else {
-                handle_dot_command(sm, line);
+                handle_dot_command(sm, full_statement);
             }
-            
-            free(line);
-            continue;
-        }
-        
-        // Parse SQL statement
-        SQLStatement* stmt = parse_sql(line);
-        if (!stmt) {
-            printf("ERROR: Failed to parse statement\n");
-            free(line);
-            continue;
-        }
-        
-        if (stmt->has_error) {
-            printf("Parse error: %s\n", stmt->error_message);
-            free_sql_statement(stmt);
-            free(line);
-            continue;
-        }
-        
-        // Execute statement
-        QueryResult* result = NULL;
-        switch (stmt->type) {
+        } else {
+            SQLStatement* stmt = parse_sql(full_statement);
+            if (stmt) {
+                if (stmt->has_error) {
+                    printf("Parse error: %s\n", stmt->error_message);
+                } else {
+                    QueryResult* result = NULL;
+                    switch (stmt->type) {
             case STMT_CREATE_TABLE:
                 result = execute_create_table(sm, stmt);
                 break;
@@ -338,11 +359,16 @@ void run_repl() {
             print_result(result);
             free_result(result);
         }
-        
+                }
         free_sql_statement(stmt);
-        free(line);
+            }
+
+        }
+        SAFE_FREE(full_statement);
     }
     
+    SAFE_FREE(full_statement);
+    finish_readline();
     sm_close(sm);
-    printf("Goodbye! Database saved to 'nyotadb.db'\n");
+    printf("Goodbye!\n");
 }

@@ -3,6 +3,7 @@
 #include "stdio.h"
 #include "stdlib.h"
 #include "string.h"
+#include "main.h"
 
 static uint32_t get_column_size(ColumnDef* column) {
     switch (column->type) {
@@ -25,7 +26,7 @@ static uint32_t get_column_offset(TableSchema* schema, uint32_t column_index) {
 }
 
 QueryResult* execute_create_table(StorageManager* sm, SQLStatement* stmt) {
-    QueryResult* result = malloc(sizeof(QueryResult));
+    QueryResult* result = SAFE_MALLOC(QueryResult, 1);
     memset(result, 0, sizeof(QueryResult));
     
     // Calculate row size
@@ -33,7 +34,7 @@ QueryResult* execute_create_table(StorageManager* sm, SQLStatement* stmt) {
 
     // Save the schema to disk
     if (!save_schema(sm, &stmt->create_schema)) {
-        result->error_message = strdup("Failed to save schema");
+        result->error_message = SAFE_STRDUP("Failed to save schema");
         return result;
     }
 
@@ -50,7 +51,7 @@ QueryResult* execute_create_table(StorageManager* sm, SQLStatement* stmt) {
     if (stmt->create_schema.primary_key_index != -1) {
         BTreeIndex* pk_btree_index = btree_create_index(&stmt->create_schema, 
                                                   stmt->create_schema.primary_key_index);
-        result->success_message = strdup("Table created successfully");
+        result->success_message = SAFE_STRDUP("Table created successfully");
         btree_free_index(pk_btree_index);
     }
 
@@ -59,25 +60,25 @@ QueryResult* execute_create_table(StorageManager* sm, SQLStatement* stmt) {
     result->row_count = 1;
     
     // Allocate space for the result grid
-    result->rows = malloc(sizeof(void**));
-    result->rows[0] = malloc(sizeof(void*));
+    result->rows = SAFE_MALLOC(void**, 1);
+    result->rows[0] = SAFE_MALLOC(void*, 1);
     
-    char* msg = malloc(100);
+    char* msg = SAFE_MALLOC(char, 256);
     snprintf(msg, 100, "Table '%s' created successfully (Row size: %u bytes)", 
              stmt->create_schema.name, stmt->create_schema.row_size);
     result->success_message = msg;
-    result->rows[0][0] = strdup(msg);
+    result->rows[0][0] = SAFE_STRDUP(msg);
     
     return result;
 }
 
 QueryResult* execute_select(StorageManager* sm, SQLStatement* stmt) {
-    QueryResult* result = calloc(1, sizeof(QueryResult));
+    QueryResult* result = SAFE_CALLOC(QueryResult, 1);
 
     // Load schema
     TableSchema* schema = load_schema(sm, stmt->select_table);
     if (!schema) {
-        result->error_message = strdup("Table not found");
+        result->error_message = SAFE_STRDUP("Table not found");
         return result;
     }
 
@@ -102,8 +103,7 @@ QueryResult* execute_select(StorageManager* sm, SQLStatement* stmt) {
     uint32_t rows_found = 0;
     uint32_t max_rows = 100; // simple limit
 
-
-    result->rows = malloc(max_rows * sizeof(void**));
+    result->rows = SAFE_MALLOC(void**, max_rows);
 
     while (current_page != 0 && rows_found < max_rows) {
         Page* page = sm_get_page(sm, current_page);
@@ -128,7 +128,7 @@ QueryResult* execute_select(StorageManager* sm, SQLStatement* stmt) {
             }
 
             bool deleted = *(bool*)(page->data + row_offset);
-            uint32_t row_id = *(uint32_t*)(page->data + row_offset + sizeof(bool));
+            // uint32_t row_id = *(uint32_t*)(page->data + row_offset + sizeof(bool));
             
             if (!deleted) {
                 // Apply WHERE filter if present
@@ -155,7 +155,7 @@ QueryResult* execute_select(StorageManager* sm, SQLStatement* stmt) {
                 
                 if (include) {
                     // Extract selected columns
-                    void** row = malloc(result->column_count * sizeof(void*));
+                    void** row = SAFE_MALLOC(void*, result->column_count);
                     
                     for (uint32_t col = 0; col < result->column_count; col++) {
                         // Find column index in schema
@@ -164,7 +164,7 @@ QueryResult* execute_select(StorageManager* sm, SQLStatement* stmt) {
                                 uint32_t col_offset = get_column_offset(schema, i);
                                 uint32_t col_size = get_column_size(&schema->columns[i]);
                                 
-                                row[col] = malloc(col_size + 1); // +1 for string null terminator
+                                row[col] = SAFE_MALLOC(void, col_size + 1);
                                 memcpy(row[col], page->data + row_offset + col_offset, col_size);
                                 
                                 // Null terminate if it's a string
@@ -194,25 +194,25 @@ QueryResult* execute_select(StorageManager* sm, SQLStatement* stmt) {
     }
     
     result->row_count = rows_found;
-    free(schema);
+    SAFE_FREE(schema);
     return result;
 }
 
 QueryResult* execute_insert(StorageManager* sm, SQLStatement* stmt) {
-    QueryResult* result = malloc(sizeof(QueryResult));
+    QueryResult* result = SAFE_MALLOC(QueryResult, 1);
     memset(result, 0, sizeof(QueryResult));
     
     // Load schema to validate
     TableSchema* schema = load_schema(sm, stmt->insert_table);
     if (!schema) {
-        result->error_message = strdup("Table not found");
+        result->error_message = SAFE_STRDUP("Table not found");
         return result;
     }
     
     // Validate value count matches column count
     if (stmt->insert_value_count != schema->column_count) {
-        result->error_message = strdup("Value count doesn't match column count");
-        free(schema);
+        result->error_message = SAFE_STRDUP("Value count doesn't match column count");
+        SAFE_FREE(schema);
         return result;
     }
     
@@ -229,9 +229,9 @@ QueryResult* execute_insert(StorageManager* sm, SQLStatement* stmt) {
     if (pk_index >= 0) {
         BTreeIndex* pk_index_ptr = btree_create_index(schema, pk_index);
         if (btree_search(sm, pk_index_ptr, stmt->insert_values[pk_index]) != 0) {
-            result->error_message = strdup("Primary key violation - duplicate value");
+            result->error_message = SAFE_STRDUP("Primary key violation - duplicate value");
             btree_free_index(pk_index_ptr);
-            free(schema);
+            SAFE_FREE(schema);
             return result;
         }
         btree_free_index(pk_index_ptr);
@@ -283,28 +283,28 @@ QueryResult* execute_insert(StorageManager* sm, SQLStatement* stmt) {
         btree_free_index(pk_index_ptr);
     }
     
-    free(row_data);
-    free(schema);
+    SAFE_FREE(row_data);
+    SAFE_FREE(schema);
     
     result->column_count = 1;
     strcpy(result->column_names[0], "rows_affected");
     result->row_count = 1;
-    result->rows = malloc(sizeof(void**));
-    result->rows[0] = malloc(sizeof(void*));
-    result->rows[0][0] = strdup("1");
+    result->rows = SAFE_MALLOC(void**, 1);
+    result->rows[0] = SAFE_MALLOC(void*, 1);
+    result->rows[0][0] = SAFE_STRDUP("1");
     
     return result;
 }
 
 // Add to executor.c
 QueryResult* execute_update(StorageManager* sm, SQLStatement* stmt) {
-    QueryResult* result = malloc(sizeof(QueryResult));
+    QueryResult* result = SAFE_MALLOC(QueryResult, 1);
     memset(result, 0, sizeof(QueryResult));
     
     // Load schema
     TableSchema* schema = load_schema(sm, stmt->update_table);
     if (!schema) {
-        result->error_message = strdup("Table not found");
+        result->error_message = SAFE_STRDUP("Table not found");
         return result;
     }
     
@@ -318,9 +318,9 @@ QueryResult* execute_update(StorageManager* sm, SQLStatement* stmt) {
             }
         }
         if (!column_found) {
-            result->error_message = malloc(100);
+            result->error_message = SAFE_MALLOC(char, 100);
             snprintf(result->error_message, 100, "Column '%s' not found", stmt->update_columns[i]);
-            free(schema);
+            SAFE_FREE(schema);
             return result;
         }
     }
@@ -351,7 +351,7 @@ QueryResult* execute_update(StorageManager* sm, SQLStatement* stmt) {
             }
             
             bool deleted = *(bool*)(page->data + row_offset);
-            uint32_t row_id = *(uint32_t*)(page->data + row_offset + sizeof(bool));
+            // uint32_t row_id = *(uint32_t*)(page->data + row_offset + sizeof(bool));
             
             if (!deleted) {
                 // Check WHERE condition if present
@@ -417,16 +417,16 @@ QueryResult* execute_update(StorageManager* sm, SQLStatement* stmt) {
         }
     }
     
-    free(schema);
+    SAFE_FREE(schema);
     
     // Return result
     result->column_count = 1;
     strcpy(result->column_names[0], "rows_updated");
     result->row_count = 1;
-    result->rows = malloc(sizeof(void**));
-    result->rows[0] = malloc(sizeof(void*));
+    result->rows = SAFE_MALLOC(void**, 1);
+    result->rows[0] = SAFE_MALLOC(void*, 1);
     
-    char* msg = malloc(20);
+    char* msg = SAFE_MALLOC(char, 20);
     snprintf(msg, 20, "%u", rows_updated);
     result->rows[0][0] = msg;
     
@@ -434,14 +434,14 @@ QueryResult* execute_update(StorageManager* sm, SQLStatement* stmt) {
 }
 
 QueryResult* execute_delete(StorageManager* sm, SQLStatement* stmt) {
-    QueryResult* result = malloc(sizeof(QueryResult));
+    QueryResult* result = SAFE_MALLOC(QueryResult, 1);
     memset(result, 0, sizeof(QueryResult));
     
     result->column_count = 1;
     strcpy(result->column_names[0], "rows_affected");
     result->row_count = 1;
-    result->rows = malloc(sizeof(void**));
-    result->rows[0] = malloc(sizeof(void*));
+    result->rows = SAFE_MALLOC(void**, 1);
+    result->rows[0] = SAFE_MALLOC(void*, 1);
     
     // Simple implementation: mark as deleted
     if (stmt->where_value && stmt->table_name[0] != '\0') {
@@ -494,16 +494,16 @@ QueryResult* execute_delete(StorageManager* sm, SQLStatement* stmt) {
                 current_page = *(uint32_t*)(page->data + PAGE_SIZE - sizeof(uint32_t));
             }
             
-            free(schema);
+            SAFE_FREE(schema);
             
-            char* msg = malloc(20);
+            char* msg = SAFE_MALLOC(char, 20);
             snprintf(msg, 20, "%u", deleted_count);
             result->rows[0][0] = msg;
             return result;
         }
     }
     
-    result->rows[0][0] = strdup("0");
+    result->rows[0][0] = SAFE_STRDUP("0");
     return result;
 }
 
@@ -598,7 +598,7 @@ TableSchema* load_schema(StorageManager* sm, const char* table_name) {
         
         if (strcmp(stored_name, table_name) == 0) {
             // Found the schema
-            TableSchema* schema = malloc(sizeof(TableSchema));
+            TableSchema* schema = SAFE_MALLOC(TableSchema, 1);
             memcpy(schema, schema_page->data + offset, sizeof(TableSchema));
             return schema;
         }
@@ -625,7 +625,7 @@ uint32_t calculate_row_size(TableSchema* schema) {
 
 void* serialize_row(TableSchema* schema, void** values) {
     uint32_t row_size = calculate_row_size(schema);
-    uint8_t* row_data = malloc(row_size);
+    uint8_t* row_data = SAFE_MALLOC(uint8_t, row_size);
     uint32_t offset = 0;
     
     // Start with deleted flag = false
@@ -663,11 +663,11 @@ void** deserialize_row(TableSchema* schema, void* row_data) {
     uint8_t* data = (uint8_t*)row_data;
     uint32_t offset = sizeof(bool) + sizeof(uint32_t) + sizeof(uint32_t); // Skip overhead
     
-    void** values = malloc(schema->column_count * sizeof(void*));
+    void** values = SAFE_MALLOC(void*, schema->column_count);
     
     for (uint32_t i = 0; i < schema->column_count; i++) {
         uint32_t col_size = get_column_size(&schema->columns[i]);
-        values[i] = malloc(col_size + 1); // +1 for string null terminator
+        values[i] = SAFE_MALLOC(void, col_size + 1);
         memcpy(values[i], data + offset, col_size);
         
         // Null terminate if it's a string
@@ -732,7 +732,7 @@ uint32_t get_all_tables(StorageManager* sm, char table_names[][MAX_TABLE_NAME], 
 }
 
 QueryResult* execute_show_tables(StorageManager* sm) {
-    QueryResult* result = malloc(sizeof(QueryResult));
+    QueryResult* result = SAFE_MALLOC(QueryResult, 1);
     memset(result, 0, sizeof(QueryResult));
     
     result->column_count = 1;
@@ -744,18 +744,18 @@ QueryResult* execute_show_tables(StorageManager* sm) {
     
     if (table_count == 0) {
         result->row_count = 1;
-        result->rows = malloc(sizeof(void**));
-        result->rows[0] = malloc(sizeof(void*));
-        result->rows[0][0] = strdup("No tables found");
+        result->rows = SAFE_MALLOC(void**, 1);
+        result->rows[0] = SAFE_MALLOC(void*, 1);
+        result->rows[0][0] = SAFE_STRDUP("No tables found");
         return result;
     }
     
     result->row_count = table_count;
-    result->rows = malloc(table_count * sizeof(void**));
+    result->rows = SAFE_MALLOC(void**, table_count);
     
     for (uint32_t i = 0; i < table_count; i++) {
-        result->rows[i] = malloc(sizeof(void*));
-        result->rows[i][0] = strdup(table_names[i]);
+        result->rows[i] = SAFE_MALLOC(void*, 1);
+        result->rows[i][0] = SAFE_STRDUP(table_names[i]);
     }
     
     return result;
@@ -769,13 +769,13 @@ void free_result(QueryResult* result) {
     for (uint32_t i = 0; i < result->row_count; i++) {
         if (result->rows[i]) {
             for (uint32_t j = 0; j < result->column_count; j++) {
-                free(result->rows[i][j]);
+                SAFE_FREE(result->rows[i][j]);
             }
-            free(result->rows[i]);
+            SAFE_FREE(result->rows[i]);
         }
     }
-    free(result->rows);
-    free(result->success_message);
-    free(result->error_message);
-    free(result);
+    SAFE_FREE(result->rows);
+    SAFE_FREE(result->success_message);
+    SAFE_FREE(result->error_message);
+    SAFE_FREE(result);
 }

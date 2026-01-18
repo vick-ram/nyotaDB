@@ -2,7 +2,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra -g -I.
 LDFLAGS = -lreadline
 
-SRCS = rdbms/main.c rdbms/storage.c rdbms/parser.c rdbms/executor.c rdbms/repl.c rdbms/webserver.c rdbms/btree.c
+SRCS = rdbms/main.c rdbms/storage.c rdbms/parser.c rdbms/executor.c rdbms/repl.c rdbms/webserver.c rdbms/btree.c rdbms/memory_mgmt.c
 OBJS = $(SRCS:.c=.o)
 TARGET = nyotadb
 

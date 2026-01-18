@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "main.h"
 
 static void node_to_page(BTreeNode* node, Page* page);
 static void page_to_node(Page* page, BTreeNode* node);
@@ -11,7 +12,8 @@ static uint32_t key_to_hash(DataType type, void* key);
 static int compare_hashes(uint32_t hash1, uint32_t hash2);
 
 BTreeIndex* btree_create_index(TableSchema* schema, uint32_t key_column) {
-    BTreeIndex* index = malloc(sizeof(BTreeIndex));
+    BTreeIndex* index = SAFE_MALLOC(BTreeIndex, 1);
+    
     index->schema = schema;
     index->key_column = key_column;
     

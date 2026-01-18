@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include "main.h"
 
 static bool parse_create_table(Tokenizer* t, SQLStatement* stmt);
 static bool parse_select(Tokenizer* t, SQLStatement* stmt);
@@ -11,11 +12,11 @@ static bool parse_update(Tokenizer* t, SQLStatement* stmt);
 static bool parse_delete(Tokenizer* t, SQLStatement* stmt);
 static bool parse_where_clause(Tokenizer* t, SQLStatement* stmt);
 static bool parse_value_list(Tokenizer* t, SQLStatement* stmt, bool for_insert);
-static bool expect_token(Tokenizer* t, const char* expected, const char* error_msg);
+static bool expect_token(Tokenizer* t, SQLStatement* stmt, const char* expected, const char* error_msg);
 
 SQLStatement *parse_sql(const char *sql)
 {
-    SQLStatement* stmt = calloc(1, sizeof(SQLStatement));
+    SQLStatement* stmt = SAFE_CALLOC(SQLStatement, 1);
     Tokenizer* t = tokenizer_create(sql);
     
     char* token = tokenizer_next(t);
@@ -62,13 +63,14 @@ SQLStatement *parse_sql(const char *sql)
         stmt->has_error = true;
     }
     
-    free(token);
+    SAFE_FREE(token);
     
     // Check for trailing semicolon (optional but good practice)
     if (parse_success) {
         char* peek = tokenizer_peek(t);
         if (peek && strcmp(peek, ";") == 0) {
-            free(tokenizer_next(t)); // Consume semicolon
+            char* colon = tokenizer_next(t);
+            SAFE_FREE(colon); // Consume semicolon
         }
         
         // Check for extra tokens
@@ -77,7 +79,7 @@ SQLStatement *parse_sql(const char *sql)
             snprintf(stmt->error_message, sizeof(stmt->error_message), 
                     "Unexpected token after statement: %s", extra);
             stmt->has_error = true;
-            free(extra);
+            SAFE_FREE(extra);
         }
     }
     
@@ -90,7 +92,7 @@ static bool parse_create_table(Tokenizer* t, SQLStatement* stmt) {
     stmt->create_schema.primary_key_index = -1;
     
     // Expect "TABLE"
-    if (!expect_token(t, "TABLE", "Expected TABLE after CREATE")) {
+    if (!expect_token(t, stmt, "TABLE", "Expected TABLE after CREATE")) {
         return false;
     }
     
@@ -101,10 +103,10 @@ static bool parse_create_table(Tokenizer* t, SQLStatement* stmt) {
         return false;
     }
     strncpy(stmt->create_schema.name, table_name, MAX_TABLE_NAME - 1);
-    free(table_name);
+    SAFE_FREE(table_name);
     
     // Expect "("
-    if (!expect_token(t, "(", "Expected '(' after table name")) {
+    if (!expect_token(t, stmt, "(", "Expected '(' after table name")) {
         return false;
     }
     
@@ -119,7 +121,7 @@ static bool parse_create_table(Tokenizer* t, SQLStatement* stmt) {
             return false;
         }
         strncpy(stmt->create_schema.columns[col_idx].name, col_name, MAX_COLUMN_NAME - 1);
-        free(col_name);
+        SAFE_FREE(col_name);
         
         // Parse data type
         char* type_str = tokenizer_next(t);
@@ -135,21 +137,22 @@ static bool parse_create_table(Tokenizer* t, SQLStatement* stmt) {
             // Check for length specification
             char* peek = tokenizer_peek(t);
             if (peek && strcmp(peek, "(") == 0) {
-                free(tokenizer_next(t)); // Consume "("
+                char* brack = tokenizer_next(t);
+                SAFE_FREE(brack); // Consume "("
                 
                 char* length_str = tokenizer_next(t);
                 if (!length_str) {
                     snprintf(stmt->error_message, sizeof(stmt->error_message), "Expected string length");
-                    free(type_str);
+                    SAFE_FREE(type_str);
                     return false;
                 }
                 
                 stmt->create_schema.columns[col_idx].length = atoi(length_str);
-                free(length_str);
+                SAFE_FREE(length_str);
                 
                 // Expect ")"
-                if (!expect_token(t, ")", "Expected ')' after string length")) {
-                    free(type_str);
+                if (!expect_token(t, stmt, ")", "Expected ')' after string length")) {
+                    SAFE_FREE(type_str);
                     return false;
                 }
             } else {
@@ -158,7 +161,7 @@ static bool parse_create_table(Tokenizer* t, SQLStatement* stmt) {
         } else {
             stmt->create_schema.columns[col_idx].length = 0;
         }
-        free(type_str);
+        SAFE_FREE(type_str);
         
         // Check for constraints
         char* next = tokenizer_peek(t);
@@ -169,11 +172,11 @@ static bool parse_create_table(Tokenizer* t, SQLStatement* stmt) {
                 char* key_token = tokenizer_next(t);
                 if (!key_token || strcasecmp(key_token, "KEY") != 0) {
                     snprintf(stmt->error_message, sizeof(stmt->error_message), "Expected KEY after PRIMARY");
-                    free(constraint);
-                    free(key_token);
+                    SAFE_FREE(constraint);
+                    SAFE_FREE(key_token);
                     return false;
                 }
-                free(key_token);
+                SAFE_FREE(key_token);
                 
                 stmt->create_schema.columns[col_idx].is_primary = true;
                 stmt->create_schema.primary_key_index = col_idx;
@@ -185,26 +188,28 @@ static bool parse_create_table(Tokenizer* t, SQLStatement* stmt) {
                 char* null_token = tokenizer_next(t);
                 if (!null_token || strcasecmp(null_token, "NULL") != 0) {
                     snprintf(stmt->error_message, sizeof(stmt->error_message), "Expected NULL after NOT");
-                    free(constraint);
-                    free(null_token);
+                    SAFE_FREE(constraint);
+                    SAFE_FREE(null_token);
                     return false;
                 }
-                free(null_token);
+                SAFE_FREE(null_token);
                 stmt->create_schema.columns[col_idx].nullable = false;
             }
             
-            free(constraint);
+            SAFE_FREE(constraint);
             next = tokenizer_peek(t);
         }
         
         // Check for comma or closing paren
         next = tokenizer_peek(t);
         if (next && strcmp(next, ",") == 0) {
-            free(tokenizer_next(t)); // Consume comma
+            char* comma = tokenizer_next(t);
+            SAFE_FREE(comma); // Consume comma
             col_idx++;
         } 
         else if (next && strcmp(next, ")") == 0) {
-            free(tokenizer_next(t)); // Consume ")"
+            char* paren = tokenizer_next(t);
+            SAFE_FREE(paren); // Consume ")"
             parsing_columns = false;
             col_idx++;
         }
@@ -231,7 +236,7 @@ static bool parse_select(Tokenizer* t, SQLStatement* stmt) {
     if (strcmp(token, "*") == 0) {
         strcpy(stmt->select_columns[0], "*");
         stmt->select_column_count = 1;
-        free(token);
+        SAFE_FREE(token);
         token = tokenizer_next(t); // Get next token for FROM
     } 
     else {
@@ -240,13 +245,13 @@ static bool parse_select(Tokenizer* t, SQLStatement* stmt) {
             if (strcmp(token, ",") != 0) {
                 if (col_idx >= MAX_COLUMNS) {
                     snprintf(stmt->error_message, sizeof(stmt->error_message), "Too many columns");
-                    free(token);
+                    SAFE_FREE(token);
                     return false;
                 }
                 strncpy(stmt->select_columns[col_idx], token, MAX_COLUMN_NAME - 1);
                 col_idx++;
             }
-            free(token);
+            SAFE_FREE(token);
             token = tokenizer_next(t);
         }
         stmt->select_column_count = col_idx;
@@ -255,10 +260,10 @@ static bool parse_select(Tokenizer* t, SQLStatement* stmt) {
     // Expect "FROM"
     if (!token || strcasecmp(token, "FROM") != 0) {
         snprintf(stmt->error_message, sizeof(stmt->error_message), "Expected FROM after column list");
-        if (token) free(token);
+        if (token) SAFE_FREE(token);
         return false;
     }
-    free(token);
+    SAFE_FREE(token);
     
     // Parse table name
     char* table_name = tokenizer_next(t);
@@ -267,12 +272,13 @@ static bool parse_select(Tokenizer* t, SQLStatement* stmt) {
         return false;
     }
     strncpy(stmt->select_table, table_name, MAX_TABLE_NAME - 1);
-    free(table_name);
+    SAFE_FREE(table_name);
     
     // Check for WHERE clause
     char* where_token = tokenizer_peek(t);
     if (where_token && strcasecmp(where_token, "WHERE") == 0) {
-        free(tokenizer_next(t)); // Consume WHERE
+        char* where_token = tokenizer_next(t);
+        SAFE_FREE(where_token); // Consume WHERE
         return parse_where_clause(t, stmt);
     }
     
@@ -283,7 +289,7 @@ static bool parse_insert(Tokenizer* t, SQLStatement* stmt) {
     stmt->type = STMT_INSERT;
     
     // Expect "INTO"
-    if (!expect_token(t, "INTO", "Expected INTO after INSERT")) {
+    if (!expect_token(t, stmt, "INTO", "Expected INTO after INSERT")) {
         return false;
     }
     
@@ -294,27 +300,28 @@ static bool parse_insert(Tokenizer* t, SQLStatement* stmt) {
         return false;
     }
     strncpy(stmt->insert_table, table_name, MAX_TABLE_NAME - 1);
-    free(table_name);
+    SAFE_FREE(table_name);
     
     // Check for column list (optional)
     char* peek = tokenizer_peek(t);
     if (peek && strcmp(peek, "(") == 0) {
         // TODO: Parse column list
-        free(tokenizer_next(t)); // Consume "("
+        char* open_paren = tokenizer_next(t);
+        SAFE_FREE(open_paren); // Consume "("
         // Skip column list for now
         while ((peek = tokenizer_next(t)) && strcmp(peek, ")") != 0) {
-            free(peek);
+            SAFE_FREE(peek);
         }
-        free(peek); // Free the ")"
+        SAFE_FREE(peek); // Free the ")"
     }
     
     // Expect "VALUES"
-    if (!expect_token(t, "VALUES", "Expected VALUES after table name")) {
+    if (!expect_token(t, stmt, "VALUES", "Expected VALUES after table name")) {
         return false;
     }
     
     // Expect "("
-    if (!expect_token(t, "(", "Expected '(' after VALUES")) {
+    if (!expect_token(t, stmt, "(", "Expected '(' after VALUES")) {
         return false;
     }
     
@@ -332,10 +339,10 @@ static bool parse_update(Tokenizer* t, SQLStatement* stmt) {
         return false;
     }
     strncpy(stmt->update_table, table_name, MAX_TABLE_NAME - 1);
-    free(table_name);
+    SAFE_FREE(table_name);
     
     // Expect "SET"
-    if (!expect_token(t, "SET", "Expected SET after table name")) {
+    if (!expect_token(t, stmt, "SET", "Expected SET after table name")) {
         return false;
     }
     
@@ -351,10 +358,10 @@ static bool parse_update(Tokenizer* t, SQLStatement* stmt) {
             return false;
         }
         strncpy(stmt->update_columns[col_idx], col_name, MAX_COLUMN_NAME - 1);
-        free(col_name);
+        SAFE_FREE(col_name);
         
         // Expect "="
-        if (!expect_token(t, "=", "Expected = after column name")) {
+        if (!expect_token(t, stmt, "=", "Expected = after column name")) {
             return false;
         }
         
@@ -367,9 +374,9 @@ static bool parse_update(Tokenizer* t, SQLStatement* stmt) {
         
         // Allocate space for update values if needed
         if (col_idx == 0) {
-            stmt->update_values = malloc(MAX_COLUMNS * sizeof(void*));
+            stmt->update_values = SAFE_MALLOC(void*, MAX_COLUMNS);
             if (!stmt->update_values) {
-                free(value_str);
+                SAFE_FREE(value_str);
                 return false;
             }
         }
@@ -378,7 +385,7 @@ static bool parse_update(Tokenizer* t, SQLStatement* stmt) {
         // For now, handle integers and strings
         if (value_str[0] == '\'' || value_str[0] == '"') {
             // String value
-            char* str_val = malloc(strlen(value_str) - 1);
+            char* str_val = SAFE_MALLOC(char, strlen(value_str) - 1);
             if (str_val) {
                 strncpy(str_val, value_str + 1, strlen(value_str) - 2);
                 str_val[strlen(value_str) - 2] = '\0';
@@ -386,23 +393,25 @@ static bool parse_update(Tokenizer* t, SQLStatement* stmt) {
             }
         } else {
             // Try integer
-            int* int_val = malloc(sizeof(int));
+            int* int_val = SAFE_MALLOC(int, 1);
             if (int_val) {
                 *int_val = atoi(value_str);
                 stmt->update_values[col_idx] = int_val;
             }
         }
-        free(value_str);
+        SAFE_FREE(value_str);
         
         col_idx++;
         
         // Check for comma or WHERE
         char* next = tokenizer_peek(t);
         if (next && strcmp(next, ",") == 0) {
-            free(tokenizer_next(t)); // Consume comma
+            char* comma = tokenizer_next(t);
+            SAFE_FREE(comma); // Consume comma
         } 
         else if (next && strcasecmp(next, "WHERE") == 0) {
-            free(tokenizer_next(t)); // Consume WHERE
+            char* where_token = tokenizer_next(t);
+            SAFE_FREE(where_token); // Consume WHERE
             parsing_set = false;
         }
         else if (!next) {
@@ -416,7 +425,8 @@ static bool parse_update(Tokenizer* t, SQLStatement* stmt) {
     // Parse WHERE clause if present
     char* where_token = tokenizer_peek(t);
     if (where_token && strcasecmp(where_token, "WHERE") == 0) {
-        free(tokenizer_next(t)); // Consume WHERE
+        char* where_token = tokenizer_next(t);
+        SAFE_FREE(where_token); // Consume WHERE
         return parse_where_clause(t, stmt);
     }
     
@@ -427,7 +437,7 @@ static bool parse_delete(Tokenizer* t, SQLStatement* stmt) {
     stmt->type = STMT_DELETE;
     
     // Expect "FROM"
-    if (!expect_token(t, "FROM", "Expected FROM after DELETE")) {
+    if (!expect_token(t, stmt, "FROM", "Expected FROM after DELETE")) {
         return false;
     }
     
@@ -438,12 +448,13 @@ static bool parse_delete(Tokenizer* t, SQLStatement* stmt) {
         return false;
     }
     strncpy(stmt->table_name, table_name, MAX_TABLE_NAME - 1);
-    free(table_name);
+    SAFE_FREE(table_name);
     
     // Check for WHERE clause
     char* where_token = tokenizer_peek(t);
     if (where_token && strcasecmp(where_token, "WHERE") == 0) {
-        free(tokenizer_next(t)); // Consume WHERE
+        char* where_token = tokenizer_next(t);
+        SAFE_FREE(where_token); // Consume WHERE
         return parse_where_clause(t, stmt);
     }
     
@@ -460,7 +471,7 @@ static bool parse_where_clause(Tokenizer* t, SQLStatement* stmt) {
         return false;
     }
     strncpy(stmt->where_column, column, MAX_COLUMN_NAME - 1);
-    free(column);
+    SAFE_FREE(column);
     
     // Parse operator
     char* op_str = tokenizer_next(t);
@@ -469,7 +480,7 @@ static bool parse_where_clause(Tokenizer* t, SQLStatement* stmt) {
         return false;
     }
     stmt->where_operator = parse_operator(op_str);
-    free(op_str);
+    SAFE_FREE(op_str);
     
     // Parse value
     char* value_str = tokenizer_next(t);
@@ -481,11 +492,11 @@ static bool parse_where_clause(Tokenizer* t, SQLStatement* stmt) {
     // For now, assume integer values
     // In a real parser, you'd determine the type from schema
     stmt->where_value_type = DT_INT;
-    int* int_val = malloc(sizeof(int));
+    int* int_val = SAFE_MALLOC(int, 1);
     *int_val = atoi(value_str);
     stmt->where_value = int_val;
     
-    free(value_str);
+    SAFE_FREE(value_str);
     return true;
 }
 
@@ -503,38 +514,40 @@ static bool parse_value_list(Tokenizer* t, SQLStatement* stmt, bool for_insert) 
         if (for_insert) {
             // Allocate space for values
             if (value_count == 0) {
-                stmt->insert_values = malloc(MAX_COLUMNS * sizeof(void*));
-                stmt->insert_value_types = malloc(MAX_COLUMNS * sizeof(DataType));
+                stmt->insert_values = SAFE_MALLOC(void*, MAX_COLUMNS);
+                stmt->insert_value_types = SAFE_MALLOC(DataType, MAX_COLUMNS);
             }
             
             // Try to parse as different types
             // For now, assume strings are quoted and integers are not
             if (value_str[0] == '\'' || value_str[0] == '"') {
                 // String value
-                char* str_val = malloc(strlen(value_str) - 1);
+                char* str_val = SAFE_MALLOC(char, strlen(value_str) - 1);
                 strncpy(str_val, value_str + 1, strlen(value_str) - 2);
                 str_val[strlen(value_str) - 2] = '\0';
                 stmt->insert_values[value_count] = str_val;
                 stmt->insert_value_types[value_count] = DT_STRING;
             } else {
                 // Try integer
-                int* int_val = malloc(sizeof(int));
+                int* int_val = SAFE_MALLOC(int, 1);
                 *int_val = atoi(value_str);
                 stmt->insert_values[value_count] = int_val;
                 stmt->insert_value_types[value_count] = DT_INT;
             }
         }
         
-        free(value_str);
+        SAFE_FREE(value_str);
         value_count++;
         
         // Check for comma or closing paren
         char* next = tokenizer_peek(t);
         if (next && strcmp(next, ",") == 0) {
-            free(tokenizer_next(t)); // Consume comma
+            char* comma = tokenizer_next(t);
+            SAFE_FREE(comma); // Consume comma
         } 
         else if (next && strcmp(next, ")") == 0) {
-            free(tokenizer_next(t)); // Consume ")"
+            char* closing_paren = tokenizer_next(t);
+            SAFE_FREE(closing_paren); // Consume ")"
             parsing_values = false;
         }
         else if (!next) {
@@ -550,13 +563,25 @@ static bool parse_value_list(Tokenizer* t, SQLStatement* stmt, bool for_insert) 
     return true;
 }
 
-static bool expect_token(Tokenizer* t, const char* expected, const char* error_msg) {
+// static bool expect_token(Tokenizer* t, const char* expected, const char* error_msg) {
+//     char* token = tokenizer_next(t);
+//     if (!token || strcasecmp(token, expected) != 0) {
+//         if (token) SAFE_FREE(token);
+//         return false;
+//     }
+//     SAFE_FREE(token);
+//     return true;
+// }
+
+static bool expect_token(Tokenizer* t, SQLStatement* stmt, const char* expected, const char* error_msg) {
     char* token = tokenizer_next(t);
     if (!token || strcasecmp(token, expected) != 0) {
-        if (token) free(token);
+        if (token) SAFE_FREE(token);
+        snprintf(stmt->error_message, sizeof(stmt->error_message), "%s", error_msg);
+        stmt->has_error = true;
         return false;
     }
-    free(token);
+    SAFE_FREE(token);
     return true;
 }
 
@@ -587,8 +612,8 @@ OperatorType parse_operator(const char* op_str) {
 
 Tokenizer *tokenizer_create(const char *sql)
 {
-    Tokenizer *t = malloc(sizeof(Tokenizer));
-    t->buffer = strdup(sql);
+    Tokenizer *t = SAFE_MALLOC(Tokenizer, 1);
+    t->buffer = SAFE_STRDUP(sql);
     t->length = strlen(sql);
     t->position = 0;
     return t;
@@ -628,7 +653,7 @@ char *tokenizer_next(Tokenizer *t)
         t->position++; // Skip closing quote
         
         size_t len = t->position - start;
-        char* token = malloc(len + 1);
+        char* token = SAFE_MALLOC(char, len + 1);
         strncpy(token, t->buffer + start, len);
         token[len] = '\0';
         return token;
@@ -639,7 +664,7 @@ char *tokenizer_next(Tokenizer *t)
         // Check for two-character operators
         if ((c == '!' || c == '<' || c == '>') && t->position + 1 < t->length && 
             t->buffer[t->position + 1] == '=') {
-            char* token = malloc(3);
+            char* token = SAFE_MALLOC(char, 3);
             token[0] = c;
             token[1] = '=';
             token[2] = '\0';
@@ -647,7 +672,7 @@ char *tokenizer_next(Tokenizer *t)
             return token;
         }
         
-        char* token = malloc(2);
+        char* token = SAFE_MALLOC(char, 2);
         token[0] = c;
         token[1] = '\0';
         t->position++;
@@ -662,7 +687,7 @@ char *tokenizer_next(Tokenizer *t)
     }
     
     size_t len = t->position - start;
-    char* token = malloc(len + 1);
+    char* token = SAFE_MALLOC(char, len + 1);
     strncpy(token, t->buffer + start, len);
     token[len] = '\0';
     return token;
@@ -690,8 +715,8 @@ bool tokenizer_has_more(Tokenizer* t) {
 
 void tokenizer_free(Tokenizer *t)
 {
-    free(t->buffer);
-    free(t);
+    SAFE_FREE(t->buffer);
+    SAFE_FREE(t);
 }
 
 void free_sql_statement(SQLStatement* statement) {
@@ -699,34 +724,34 @@ void free_sql_statement(SQLStatement* statement) {
     
     // Free WHERE value
     if (statement->where_value) {
-        free(statement->where_value);
+        SAFE_FREE(statement->where_value);
     }
     
     // Free INSERT values
     if (statement->insert_values) {
         for (uint32_t i = 0; i < statement->insert_value_count; i++) {
             if (statement->insert_values[i]) {
-                free(statement->insert_values[i]);
+                SAFE_FREE(statement->insert_values[i]);
             }
         }
-        free(statement->insert_values);
+        SAFE_FREE(statement->insert_values);
     }
     
     if (statement->insert_value_types) {
-        free(statement->insert_value_types);
+        SAFE_FREE(statement->insert_value_types);
     }
     
     // Free UPDATE values (if implemented)
     if (statement->update_values) {
         for (uint32_t i = 0; i < statement->update_column_count; i++) {
             if (statement->update_values[i]) {
-                free(statement->update_values[i]);
+                SAFE_FREE(statement->update_values[i]);
             }
         }
-        free(statement->update_values);
+        SAFE_FREE(statement->update_values);
     }
     
-    free(statement);
+    SAFE_FREE(statement);
 }
 
 const char* statement_type_to_string(StatementType type) {
