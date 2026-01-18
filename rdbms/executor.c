@@ -25,6 +25,17 @@ static uint32_t get_column_offset(TableSchema* schema, uint32_t column_index) {
     return offset;
 }
 
+static void* get_column_value(TableSchema* schema, Page* page, uint32_t row_offset, uint32_t col_index) {
+    uint32_t coll_offset = get_column_offset(schema, col_index);
+    uint32_t col_size = get_column_size(&schema->columns[col_index]);
+    
+    void* value = SAFE_MALLOC(void, col_size + 1);
+    if (value) {
+        memcpy(value, page->data + row_offset + coll_offset, col_size);
+    }
+    return value;
+}
+
 QueryResult* execute_create_table(StorageManager* sm, SQLStatement* stmt) {
     QueryResult* result = SAFE_MALLOC(QueryResult, 1);
     memset(result, 0, sizeof(QueryResult));
@@ -198,6 +209,208 @@ QueryResult* execute_select(StorageManager* sm, SQLStatement* stmt) {
     return result;
 }
 
+QueryResult* execute_join(StorageManager* sm, SQLStatement* stmt) {
+    QueryResult* result = SAFE_CALLOC(QueryResult, 1);
+
+    if (!stmt->has_join) {
+        result->error_message = SAFE_STRDUP("No JOIN clause found");
+        return result;
+    }
+
+    // Load schemas for both tables
+    TableSchema* left_schema = load_schema(sm, stmt->join_clause.left_table);
+    TableSchema* right_schema = load_schema(sm, stmt->join_clause.right_table);
+
+    if (!left_schema || !right_schema) {
+        result->error_message = SAFE_STRDUP("One or both tables not found");
+        if (left_schema) SAFE_FREE(left_schema);
+        if (right_schema) SAFE_FREE(right_schema);
+        return result;
+    }
+
+    // Find join column indices
+    int left_join_col = -1, right_join_col = -1;
+
+    for (uint32_t i = 0; i < left_schema->column_count; i++) {
+        if (strcmp(left_schema->columns[i].name, stmt->join_clause.on_left) == 0) {
+            left_join_col = i;
+            break;
+        }
+    }
+
+    for (uint32_t i = 0; i < right_schema->column_count; i++) {
+        if (strcmp(right_schema->columns[i].name, stmt->join_clause.on_right) == 0) {
+            right_join_col = i;
+            break;
+        }
+    }
+
+    if (left_join_col == -1 || right_join_col == -1) {
+        result->error_message = SAFE_STRDUP("Join columns not found");
+        SAFE_FREE(left_schema);
+        SAFE_FREE(right_schema);
+        return result;
+    }
+
+    // Setup result columns
+    result->column_count = left_schema->column_count + right_schema->column_count;
+
+    // Name columns as table.column
+    uint32_t col_idx = 0;
+    for (uint32_t i = 0; i < left_schema->column_count; i++) {
+        snprintf(result->column_names[col_idx++], MAX_COLUMN_NAME,
+                "%s.%s", stmt->join_clause.left_table, left_schema->columns[i].name);
+    }
+    for (uint32_t i = 0; i < right_schema->column_count; i++) {
+        snprintf(result->column_names[col_idx++], MAX_COLUMN_NAME,
+                "%s.%s", stmt->join_clause.right_table, right_schema->columns[i].name);
+    }
+
+    // Simple nested loop join (for small datasets)
+    // Build hash table from right table (for INNER JOIN)
+    typedef struct {
+        void* key;
+        void** row_data;  // Entire row from right table
+    } HashEntry;
+
+    HashEntry* hash_table[1000] = {0};  // Simple fixed-size hash table
+
+    // First pass: Build hash from right table
+    uint32_t right_page = sm->header.root_page;
+    while (right_page != 0) {
+        Page* page = sm_get_page(sm, right_page);
+        if (!page) break;
+
+        uint32_t row_offset = 0;
+        while (row_offset + right_schema->row_size <= PAGE_SIZE) {
+            bool deleted = *(bool*)(page->data + row_offset);
+
+            if (!deleted) {
+                // Get join key from right table
+                void* key = get_column_value(right_schema, page, row_offset, right_join_col);
+                if (key) {
+                    // Simple hash function
+                    uint32_t hash = (*(int*)key) % 1000;  // Assuming INT keys
+
+                    // Store entire row
+                    void** row_data = SAFE_MALLOC(void*, right_schema->column_count);
+                    for (uint32_t i = 0; i < right_schema->column_count; i++) {
+                        uint32_t col_offset = get_column_offset(right_schema, i);
+                        uint32_t col_size = get_column_size(&right_schema->columns[i]);
+                        // row_data[i] = malloc(col_size);
+                        row_data[i] = SAFE_MALLOC(void*, col_size);
+                        memcpy(row_data[i], page->data + row_offset + col_offset, col_size);
+                    }
+
+                    // HashEntry* entry = malloc(sizeof(HashEntry));
+                    HashEntry* entry = SAFE_MALLOC(HashEntry, 1);
+                    entry->key = key;
+                    entry->row_data = row_data;
+                    hash_table[hash] = entry;
+                }
+            }
+
+            row_offset += right_schema->row_size;
+        }
+
+        // Get next page
+        if (PAGE_SIZE >= sizeof(uint32_t)) {
+            right_page = *(uint32_t*)(page->data + PAGE_SIZE - sizeof(uint32_t));
+        } else {
+            right_page = 0;
+        }
+    }
+
+    // Second pass: Probe with left table
+    uint32_t max_rows = 1000;
+    result->rows = SAFE_MALLOC(void**, max_rows);
+    uint32_t rows_found = 0;
+
+    uint32_t left_page = sm->header.root_page;
+    while (left_page != 0 && rows_found < max_rows) {
+        Page* page = sm_get_page(sm, left_page);
+        if (!page) break;
+
+        uint32_t row_offset = 0;
+        while (row_offset + left_schema->row_size <= PAGE_SIZE && rows_found < max_rows) {
+            bool deleted = *(bool*)(page->data + row_offset);
+
+            if (!deleted) {
+                // Get join key from left table
+                void* key = get_column_value(left_schema, page, row_offset, left_join_col);
+                if (key) {
+                    // Find matching entry in hash table
+                    uint32_t hash = (*(int*)key) % 1000;
+                    HashEntry* entry = hash_table[hash];
+
+                    if (entry) {
+                        // Compare keys (simple integer comparison for now)
+                        if (memcmp(key, entry->key, sizeof(int)) == 0) {
+                            // Create joined row
+                            void** joined_row = SAFE_MALLOC(void*, result->column_count);
+
+                            // Copy left table columns
+                            for (uint32_t i = 0; i < left_schema->column_count; i++) {
+                                uint32_t col_offset = get_column_offset(left_schema, i);
+                                uint32_t col_size = get_column_size(&left_schema->columns[i]);
+                                // joined_row[i] = malloc(col_size + 1); // +1 for strings
+                                joined_row[i] = SAFE_MALLOC(void*, col_size);
+                                memcpy(joined_row[i], page->data + row_offset + col_offset, col_size);
+                                if (left_schema->columns[i].type == DT_STRING) {
+                                    ((char*)joined_row[i])[col_size] = '\0';
+                                }
+                            }
+
+                            // Copy right table columns
+                            for (uint32_t i = 0; i < right_schema->column_count; i++) {
+                                uint32_t col_idx = left_schema->column_count + i;
+                                uint32_t col_size = get_column_size(&right_schema->columns[i]);
+                                joined_row[col_idx] = malloc(col_size + 1);
+                                memcpy(joined_row[col_idx], entry->row_data[i], col_size);
+                                if (right_schema->columns[i].type == DT_STRING) {
+                                    ((char*)joined_row[col_idx])[col_size] = '\0';
+                                }
+                            }
+
+                            result->rows[rows_found++] = joined_row;
+                        }
+                    }
+
+                    free(key);
+                }
+            }
+
+            row_offset += left_schema->row_size;
+        }
+
+        // Get next page
+        if (PAGE_SIZE >= sizeof(uint32_t)) {
+            left_page = *(uint32_t*)(page->data + PAGE_SIZE - sizeof(uint32_t));
+        } else {
+            left_page = 0;
+        }
+    }
+
+    result->row_count = rows_found;
+
+    // Cleanup hash table
+    for (int i = 0; i < 1000; i++) {
+        if (hash_table[i]) {
+            SAFE_FREE(hash_table[i]->key);
+            for (uint32_t j = 0; j < right_schema->column_count; j++) {
+                SAFE_FREE(hash_table[i]->row_data[j]);
+            }
+            SAFE_FREE(hash_table[i]->row_data);
+            SAFE_FREE(hash_table[i]);
+        }
+    }
+
+    SAFE_FREE(left_schema);
+    SAFE_FREE(right_schema);
+
+    return result;
+}
+
 QueryResult* execute_insert(StorageManager* sm, SQLStatement* stmt) {
     QueryResult* result = SAFE_MALLOC(QueryResult, 1);
     memset(result, 0, sizeof(QueryResult));
@@ -298,8 +511,7 @@ QueryResult* execute_insert(StorageManager* sm, SQLStatement* stmt) {
 
 // Add to executor.c
 QueryResult* execute_update(StorageManager* sm, SQLStatement* stmt) {
-    QueryResult* result = SAFE_MALLOC(QueryResult, 1);
-    memset(result, 0, sizeof(QueryResult));
+    QueryResult* result = SAFE_CALLOC(QueryResult, 1);
     
     // Load schema
     TableSchema* schema = load_schema(sm, stmt->update_table);
@@ -504,6 +716,38 @@ QueryResult* execute_delete(StorageManager* sm, SQLStatement* stmt) {
     }
     
     result->rows[0][0] = SAFE_STRDUP("0");
+    return result;
+}
+
+QueryResult* execute_drop_table(StorageManager* sm, SQLStatement* stmt) {
+    QueryResult* result = SAFE_CALLOC(QueryResult, 1);
+
+    result->column_count = 1;
+    strcpy(result->column_names[0], "status");
+    result->row_count = 1;
+    result->rows = SAFE_MALLOC(void**, 1);
+    result->rows[0] = SAFE_MALLOC(void*, 1);
+
+    // Check if table exists
+    TableSchema* schema = load_schema(sm, stmt->drop_table);
+    if (!schema) {
+        result->rows[0][0] = strdup("Table does not exist");
+        return result;
+    }
+    SAFE_FREE(schema);
+
+    // Delete the schema
+    if (delete_schema(sm, stmt->drop_table)) {
+        // TODO: Also delete all data pages associated with this table
+        // For now, we'll just delete the schema
+
+        result->rows[0][0] = malloc(100);
+        snprintf((char*)result->rows[0][0], 100,
+                "Table '%s' dropped successfully", stmt->drop_table);
+    } else {
+        result->rows[0][0] = SAFE_STRDUP("Failed to drop table");
+    }
+
     return result;
 }
 

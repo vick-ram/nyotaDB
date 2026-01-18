@@ -33,6 +33,22 @@ typedef struct {
     DataType value_type;
 } WhereClause;
 
+typedef enum {
+    JOIN_INNER,
+    JOIN_LEFT,
+    JOIN_RIGHT,
+    JOIN_FULL
+} JoinType;
+
+typedef struct
+{
+    char left_table[MAX_TABLE_NAME];
+    char right_table[MAX_TABLE_NAME];
+    JoinType type;
+    char on_left[MAX_COLUMN_NAME];
+    char on_right[MAX_COLUMN_NAME];
+} JoinClause;
+
 typedef struct {
     StatementType type;
 
@@ -45,6 +61,8 @@ typedef struct {
     uint32_t select_column_count;
     WhereClause where_clause;
     bool has_where;
+    JoinClause join_clause;
+    bool has_join;
 
     // For INSERT
     char insert_table[MAX_TABLE_NAME];
@@ -66,6 +84,9 @@ typedef struct {
     char update_columns[MAX_COLUMNS][MAX_COLUMN_NAME];
     void** update_values;
     uint32_t update_column_count;
+
+    // For DROP TABLE
+    char drop_table[MAX_TABLE_NAME];
     
     // Error information
     char error_message[256];

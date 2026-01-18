@@ -22,6 +22,9 @@ QueryResult* execute_delete(StorageManager* sm, SQLStatement* stmt);
 uint32_t count_tables(StorageManager* sm);
 uint32_t get_all_tables(StorageManager* sm, char table_names[][MAX_TABLE_NAME], uint32_t max_tables);
 QueryResult* execute_show_tables(StorageManager* sm);
+QueryResult* execute_join(StorageManager* sm, SQLStatement* stmt);
+QueryResult* execute_drop_table(StorageManager* sm, SQLStatement* stmt);
+bool delete_schema(StorageManager* sm, const char* table_name);
 
 // Helper functions
 TableSchema* load_schema(StorageManager* sm, const char* table_name);
