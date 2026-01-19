@@ -211,7 +211,7 @@ void btree_free_index(BTreeIndex* index) {
     if (!index) return;
     
     printf("Freeing B-Tree index\n");
-    free(index);
+    SAFE_FREE(index);
 }
 
 

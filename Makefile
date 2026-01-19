@@ -23,4 +23,4 @@ web: $(TARGET)
 	./$(TARGET) --web
 
 clean:
-	rm -f $(OBJS) $(TARGET) test.db
+	rm -f $(OBJS) $(TARGET) nyotadb.db

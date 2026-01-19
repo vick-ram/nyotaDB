@@ -10,13 +10,16 @@
 #include "parser.h"
 #include "executor.h"
 #include <ctype.h>
+#include <fcntl.h>
+#include <stdbool.h>
 #include "main.h"
 
-#define PORT 8082
+#define PORT 8085
 #define BUFFER_SIZE 8192
 #define MAX_CLIENTS 10
 
 static int server_fd_global = -1; // Global to access in signal handler
+static volatile bool server_running = true;
 
 // HTML/CSS/JS for the web interface
 const char* HTML_PAGE = 
@@ -289,9 +292,14 @@ void handle_request(int client_fd, StorageManager* sm) {
         close(client_fd);
         return;
     }
+
+    // Make a copy of the buffer before parsing to preserve body
+    char buffer_copy[BUFFER_SIZE];
+    strncpy(buffer_copy, buffer, BUFFER_SIZE - 1);
+    buffer_copy[BUFFER_SIZE - 1] = '\0';
     
     // Parse request line
-    char* method = strtok(buffer, " ");
+    char* method = strtok(buffer_copy, " ");
     char* path = strtok(NULL, " ");
     
     if (!method || !path) {
@@ -478,11 +486,23 @@ void handle_request(int client_fd, StorageManager* sm) {
 void signal_handler(int sig) {
     if (sig == SIGINT) {
         printf("\nShutting down nyotaDB web server...\n");
+        server_running = false;
+
+        // Force accept() to return by connecting to ourselves
         if (server_fd_global >= 0) {
-            close(server_fd_global);
-            server_fd_global = -1;
+            // Create a connection to the server to unblock accept()
+            int dummy_fd = socket(AF_INET, SOCK_STREAM, 0);
+            if (dummy_fd >= 0) {
+                struct sockaddr_in addr;
+                addr.sin_family = AF_INET;
+                addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                addr.sin_port = htons(PORT);
+
+                // Non-blocking connect to unblock accept()
+                connect(dummy_fd, (struct sockaddr*)&addr, sizeof(addr));
+                close(dummy_fd);
+            }
         }
-        exit(0);
     }
 }
 
@@ -498,11 +518,17 @@ void run_webserver(StorageManager* sm) {
     
     // Set socket options
     int opt = 1;
-    if (setsockopt(server_fd_global, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
-        perror("Failed to set socket options");
-        close(server_fd_global);
-        exit(EXIT_FAILURE);
-    }
+    setsockopt(server_fd_global, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(server_fd_global, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+    // if (setsockopt(server_fd_global, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+    //     perror("Failed to set socket options");
+    //     close(server_fd_global);
+    //     exit(EXIT_FAILURE);
+    // }
+
+    // Set soket to non-blocking for clear shutdown
+    const int flags = fcntl(server_fd_global, F_GETFL, 0);
+    fcntl(server_fd_global, F_SETFL, flags | O_NONBLOCK);
     
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;
@@ -529,15 +555,29 @@ void run_webserver(StorageManager* sm) {
     printf("║  • API Endpoint: http://localhost:%d/api/query ║\n", PORT);
     printf("║  • Press Ctrl+C to stop server               ║\n");
     printf("╚══════════════════════════════════════════════╝\n\n");
+
+    // Set up signal handling
+    struct sigaction sa;
+    sa.sa_handler = signal_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, NULL);
     
-    while (1) {
+    while (server_running) {
         int client_fd = accept(server_fd_global, (struct sockaddr*)&address, (socklen_t*)&addrlen);
         if (client_fd < 0) {
-            if (errno == EINTR) {
-                // Interrupted by signal, exit loop
+            if (errno == EWOULDBLOCK || errno == EAGAIN) {
+                usleep(100000);
+                continue;
+            }
+            if (errno == EINTR && !server_running) {
+                // Interrupted by signal during shutdown
                 break;
             }
-            perror("Failed to accept connection");
+
+            if (errno != EINTR) {
+                perror("Failed to accept connection");
+            }
             continue;
         }
         
@@ -546,7 +586,11 @@ void run_webserver(StorageManager* sm) {
 
     // Close socket if loop exists
     if (server_fd_global != -1) {
+        shutdown(server_fd_global, SHUT_RDWR);
         close(server_fd_global);
         server_fd_global = -1;
     }
+
+    usleep(100000); // 100ms
+    printf("Server shutdown complete.\n");
 }

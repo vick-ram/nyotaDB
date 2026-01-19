@@ -737,16 +737,16 @@ QueryResult* execute_drop_table(StorageManager* sm, SQLStatement* stmt) {
     SAFE_FREE(schema);
 
     // Delete the schema
-    if (delete_schema(sm, stmt->drop_table)) {
-        // TODO: Also delete all data pages associated with this table
-        // For now, we'll just delete the schema
-
-        result->rows[0][0] = malloc(100);
-        snprintf((char*)result->rows[0][0], 100,
-                "Table '%s' dropped successfully", stmt->drop_table);
-    } else {
-        result->rows[0][0] = SAFE_STRDUP("Failed to drop table");
-    }
+    // if (delete_schema(sm, stmt->drop_table)) {
+    //     // TODO: Also delete all data pages associated with this table
+    //     // For now, we'll just delete the schema
+    //
+    //     result->rows[0][0] = malloc(100);
+    //     snprintf((char*)result->rows[0][0], 100,
+    //             "Table '%s' dropped successfully", stmt->drop_table);
+    // } else {
+    //     result->rows[0][0] = SAFE_STRDUP("Failed to drop table");
+    // }
 
     return result;
 }
@@ -763,7 +763,6 @@ bool save_schema(StorageManager* sm, TableSchema* schema) {
         // schema_page_id = sm_allocate_page(sm);
         schema_page_id = 1; // Schema always starts at page 1
         sm->header.schema_page = schema_page_id;
-        // sm->header.is_dirty = true;
 
         printf("DEBUG: Allocated schema page %u\n", schema_page_id);
 

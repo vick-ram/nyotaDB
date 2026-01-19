@@ -13,7 +13,6 @@ int main(int argc, char* argv[]) {
     // Check command line arguments
     if (argc > 1 && strcmp(argv[1], "--web") == 0) {
         // Web server mode
-        printf("Starting NyotaDB web server on port 8080...\n");
         run_webserver(sm);
     } else {
         // REPL mode (default)
